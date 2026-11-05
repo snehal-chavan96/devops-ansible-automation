@@ -1,0 +1,118 @@
+
+---
+- name: Configure and deploy Flask application on Amazon Linux
+  hosts: webservers
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - group_vars/webservers.yml
+
+  tasks:
+
+    - name: Update DNF package cache
+      ansible.builtin.dnf:
+        update_cache: true
+
+    - name: Install required system packages
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+          - nginx
+        state: present
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_directory }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Copy Flask application
+      ansible.builtin.copy:
+        src: ../application/app.py
+        dest: "{{ app_directory }}/app.py"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+
+    - name: Copy Python requirements
+      ansible.builtin.copy:
+        src: ../application/requirements.txt
+        dest: "{{ app_directory }}/requirements.txt"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: '0644'
+
+    - name: Create Python virtual environment and install dependencies
+      ansible.builtin.pip:
+        requirements: "{{ app_directory }}/requirements.txt"
+        virtualenv: "{{ app_directory }}/venv"
+        virtualenv_command: "{{ python_executable }} -m venv"
+
+    - name: Configure Flask systemd service
+      ansible.builtin.template:
+        src: templates/flask-app.service.j2
+        dest: /etc/systemd/system/flask-app.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Restart Flask application
+
+    - name: Configure Nginx
+      ansible.builtin.template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart Nginx
+
+    - name: Enable and start Flask application
+      ansible.builtin.systemd:
+        name: flask-app
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Enable and start Nginx
+      ansible.builtin.service:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Verify Flask application health endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ nginx_port }}/health"
+        method: GET
+        status_code: 200
+        return_content: true
+      register: health_check
+      retries: 5
+      delay: 3
+      until: health_check.status == 200
+
+    - name: Display deployment verification
+      ansible.builtin.debug:
+        msg: "Application deployed successfully! Health status: {{ health_check.json.status }}"
+
+  handlers:
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart Flask application
+      ansible.builtin.service:
+        name: flask-app
+        state: restarted
+
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
